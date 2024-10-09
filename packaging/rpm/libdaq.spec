@@ -3,7 +3,7 @@
 # works on other fedora and epel releases, which are supported by this software.
 # No quick Rawhide-only fixes will be allowed.
 
-%global upstream_name daq
+%global upstream_name libdaq
 
 %if 0%{?el7}
 # el7/{ppc64,ppc64le} Error: No Package found for libdnet-devel
@@ -11,7 +11,7 @@ ExclusiveArch:	x86_64 aarch64
 %endif
 
 Summary:	Data Acquisition Library
-Name:		daq
+Name:		libdaq
 Version:	%{__version}
 Release:	1%{?dist}
 # sfbpf is BSD (various versions)
@@ -27,6 +27,7 @@ BuildRequires:	libtool
 BuildRequires:	libdnet-devel
 BuildRequires:	libpcap-devel
 BuildRequires: make
+BuildRequires: gcc-c++
 
 # handle license on el{6,7}: global must be defined after the License field above
 %{!?_licensedir: %global license %doc}

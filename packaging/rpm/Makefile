@@ -1,4 +1,4 @@
-PACKAGE_NAME?=	daq
+PACKAGE_NAME?=	libdaq
 
 VERSION?=	$(shell git describe --abbrev=6 --tags HEAD --always | sed 's/-/_/g')
 

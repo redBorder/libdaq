@@ -53,7 +53,7 @@ autoreconf -ivf -Wobsolete
 # get rid of rpath
 %{__sed} -i 's|^hardcode_libdir_flag_spec=.*|hardcode_libdir_flag_spec=""|g' libtool
 %{__sed} -i 's|^runpath_var=LD_RUN_PATH|runpath_var=DIE_RPATH_DIE|g' libtool
-VERSION=3.0.0 %{__make} V=1
+VERSION=3.0.16 %{__make} V=1
 
 %install
 %{make_install}

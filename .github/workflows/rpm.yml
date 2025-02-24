@@ -21,7 +21,7 @@ jobs:
       - name: Create tag based on metadata.rb
         id: create_tag
         run: |
-          TAG=$(grep -o 'version\s*["'\''][^"'\'']*' ./resources/metadata.rb | sed 's/version\s*["'\'']//;s/["'\'']//')
+          TAG=$(cat ./VERSION)
           echo "TAG=$TAG" >> $GITHUB_ENV
         shell: bash
 

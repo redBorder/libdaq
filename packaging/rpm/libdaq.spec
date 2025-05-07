@@ -15,6 +15,8 @@ License:	GPLv2 and BSD
 URL:		https://www.snort.org
 Source0:	https://www.snort.org/downloads/snort/%{upstream_name}-%{version}.tar.gz
 
+Requires: pfring, pfring-dkms
+
 BuildRequires:	autoconf
 BuildRequires:	automake
 BuildRequires:	bison
@@ -22,6 +24,7 @@ BuildRequires:	flex
 BuildRequires:	libtool
 BuildRequires:	libdnet-devel
 BuildRequires:	libpcap-devel
+BuildRequires:	pfring
 BuildRequires:	make
 BuildRequires:	gcc-c++
 
@@ -82,6 +85,28 @@ VERSION=3.0.16 %{__make} V=1
 %{_libdir}/libdaq_static_pcap.a
 %{_libdir}/libdaq_static_savefile.a
 %{_libdir}/libdaq_static_trace.a
+%{_libdir}/daq/daq_pfring.la
+%{_libdir}/daq/daq_pfring.so
+%{_libdir}/libdaq_static_afpacket.la
+%{_libdir}/libdaq_static_bpf.la
+%{_libdir}/libdaq_static_dump.la
+%{_libdir}/libdaq_static_fst.la
+%{_libdir}/libdaq_static_gwlb.la
+%{_libdir}/libdaq_static_pcap.la
+%{_libdir}/libdaq_static_savefile.la
+%{_libdir}/libdaq_static_trace.la
+
+%{_libdir}/pkgconfig/libdaq.pc
+%{_libdir}/pkgconfig/libdaq_static_afpacket.pc
+%{_libdir}/pkgconfig/libdaq_static_bpf.pc
+%{_libdir}/pkgconfig/libdaq_static_dump.pc
+%{_libdir}/pkgconfig/libdaq_static_fst.pc
+%{_libdir}/pkgconfig/libdaq_static_gwlb.pc
+%{_libdir}/pkgconfig/libdaq_static_pcap.pc
+%{_libdir}/pkgconfig/libdaq_static_pfring.pc
+%{_libdir}/pkgconfig/libdaq_static_savefile.pc
+%{_libdir}/pkgconfig/libdaq_static_trace.pc
+
 %license COPYING
 
 %files devel

@@ -348,6 +348,7 @@ typedef struct _daq_stats
 {
     uint64_t hw_packets_received;       /* Packets received by the hardware */
     uint64_t hw_packets_dropped;        /* Packets dropped by the hardware */
+    uint64_t hw_packets_bypassed;       /* Packets bypassed by the hardware */
     uint64_t packets_received;          /* Packets received by this instance */
     uint64_t packets_filtered;          /* Packets filtered by this instance's BPF */
     uint64_t packets_injected;          /* Packets injected by this instance */
@@ -393,6 +394,8 @@ typedef struct _daq_msg_pool_info
 #define DAQ_CAPA_DECODE_MPLS    0x00020000   /* decodes and tracks flows within MPLS. */
 #define DAQ_CAPA_DECODE_VXLAN   0x00040000   /* decodes and tracks flows within VXLAN. */
 #define DAQ_CAPA_DECODE_GENEVE  0x00080000   /* decodes and tracks flows within Geneve. */
+#define DAQ_CAPA_SOFT_BYPASS    0x00160000   /* can bypass packets via software for heavy load scenarios */
+
 
 /*
  * DAQ I/O Controls (DIOCTLs)

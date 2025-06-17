@@ -24,7 +24,7 @@
 #endif
 
 #define _GNU_SOURCE // For POLLRDHUP
-
+#include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
 #include <linux/if_ether.h>
@@ -146,6 +146,18 @@ typedef struct _afpacket_context
     DAQ_Stats_t stats;
     /* Message receive state */
     AFPacketInstance *curr_instance;
+
+    /* redBorder */
+    struct {
+        char *software_bypass_log;
+        FILE *software_bypass_log_f;
+        u_int64_t pkts_bypassed;
+        u_int64_t base_pkts_bypassed;
+        u_int64_t upper_threshold;
+        u_int64_t lower_threshold;
+        u_int64_t sampling_rate;
+        u_int64_t pkts_to_bypass;
+    } sw_bypass;
 } AFPacket_Context_t;
 
 /* VLAN defintions stolen from LibPCAP's vlan.h. */
@@ -161,6 +173,10 @@ static DAQ_VariableDesc_t afpacket_variable_descriptions[] = {
     { "fanout_type", "Fanout loadbalancing method", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
     { "fanout_flag", "Fanout loadbalancing option", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
     { "use_tx_ring", "Use memory-mapped TX ring", DAQ_VAR_DESC_FORBIDS_ARGUMENT },
+    { "sbypassupperthreshold", "Upper queue threshold to activate bypass", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
+    { "sbypasslowerthreshold", "Lower queue threshold to deactivate bypass", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
+    { "sbypasssamplingrate", "Sampling rate for bypass decisions", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
+    { "sbypasslogfile", "File to log bypass statistics", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
 };
 
 static const int vlan_offset = 2 * ETH_ALEN;
@@ -230,6 +246,73 @@ static int create_packet_pool(AFPacket_Context_t *afpc, unsigned size)
     }
     pool->info.available = pool->info.size;
     return DAQ_SUCCESS;
+}
+
+static uint64_t afpacket_daq_total_queued(AFPacket_Context_t *context) {
+    AFPacketInstance *instance;
+    uint64_t total_queued = 0;
+
+    for (instance = context->instances; instance; instance = instance->next) {
+        if (!instance->active)
+            continue;
+
+        AFPacketEntry *entry = instance->rx_ring.cursor;
+        AFPacketEntry *start = entry;
+        
+        do {
+            if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+                total_queued++;
+            }
+            entry = entry->next;
+        } while (entry != start);
+    }
+
+    return total_queued;
+}
+
+static int rb_log_print_line(FILE *f, u_int64_t stat) {
+    fseek(f, 0, SEEK_SET);
+    const int written = fprintf(f, "%lu\n", stat);
+    fflush(f);
+    return written;
+}
+
+static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
+    if (context->sw_bypass.software_bypass_log_f &&
+        context->sw_bypass.pkts_bypassed > context->sw_bypass.base_pkts_bypassed) {
+        const int written = rb_log_print_line(context->sw_bypass.software_bypass_log_f,
+                                            context->sw_bypass.pkts_bypassed);
+        if (written > 0) {
+            context->sw_bypass.base_pkts_bypassed = context->sw_bypass.pkts_bypassed;
+        }
+    }
+}
+
+static void update_soft_bypass_status(AFPacket_Context_t *context) {
+    if (context->sw_bypass.sampling_rate == 0) {
+        return;
+    }
+
+    if (context->sw_bypass.pkts_to_bypass == 0 &&
+        ((context->stats.packets_received + context->sw_bypass.pkts_bypassed) % 
+         context->sw_bypass.sampling_rate == 0)) {
+
+        const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
+        if (num_queued_packets > context->sw_bypass.upper_threshold) {
+            context->sw_bypass.pkts_to_bypass = 
+                (num_queued_packets - context->sw_bypass.lower_threshold) + 
+                context->sw_bypass.sampling_rate;
+        }
+    } else if (context->sw_bypass.pkts_to_bypass == 1) {
+        const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
+        if (num_queued_packets > context->sw_bypass.lower_threshold) {
+            context->sw_bypass.pkts_to_bypass = 
+                (num_queued_packets - context->sw_bypass.lower_threshold) + 
+                context->sw_bypass.sampling_rate;
+        } else {
+            software_bypass_stats_print_line(context);
+        }
+    }
 }
 
 static int bind_instance_interface(AFPacket_Context_t *afpc, AFPacketInstance *instance, int protocol)
@@ -760,7 +843,7 @@ static void reset_stats(AFPacket_Context_t *afpc)
     socklen_t len = sizeof (struct tpacket_stats);
 
     memset(&afpc->stats, 0, sizeof(DAQ_Stats_t));
-    /* Just call PACKET_STATISTICS to clear each instance's stats. */
+    afpc->stats.bypass_activations = 0;
     for (instance = afpc->instances; instance; instance = instance->next)
         getsockopt(instance->fd, SOL_PACKET, PACKET_STATISTICS, &kstats, &len);
 }
@@ -829,11 +912,46 @@ static int afpacket_daq_instantiate(const DAQ_ModuleConfig_h modcfg, DAQ_ModuleI
         SET_ERROR(modinst, "%s: Invalid interface specification: '%s'!", __func__, afpc->device);
         goto err;
     }
+    memset(&afpc->sw_bypass, 0, sizeof(afpc->sw_bypass));
 
     const char *varKey, *varValue;
     daq_base_api.config_first_variable(modcfg, &varKey, &varValue);
     while (varKey)
     {
+        if (!strcmp(varKey, "sbypassupperthreshold")) {
+            char* end = varValue;
+            afpc->sw_bypass.upper_threshold = strtoull(varValue, &end, 0);
+            if(end == varValue || *end != '\0') {
+                SET_ERROR(modinst, "%s: Invalid upper threshold value: %s", __func__, varValue);
+                goto err;
+            }
+        } else if (!strcmp(varKey, "sbypasslowerthreshold")) {
+            char* end = varValue;
+            afpc->sw_bypass.lower_threshold = strtoull(varValue, &end, 0);
+            if(end == varValue || *end != '\0') {
+                SET_ERROR(modinst, "%s: Invalid lower threshold value: %s", __func__, varValue);
+                goto err;
+            }
+        } else if (!strcmp(varKey, "sbypasssamplingrate")) {
+            char* end = varValue;
+            afpc->sw_bypass.sampling_rate = strtoull(varValue, &end, 0);
+            if(end == varValue || *end != '\0') {
+                SET_ERROR(modinst, "%s: Invalid sampling rate value: %s", __func__, varValue);
+                goto err;
+            }
+        } else if (!strcmp(varKey, "sbypasslogfile")) {
+            afpc->sw_bypass.software_bypass_log = strdup(varValue);
+            if (!afpc->sw_bypass.software_bypass_log) {
+                SET_ERROR(modinst, "%s: Could not allocate memory for bypass log filename", __func__);
+                goto err;
+            }
+            afpc->sw_bypass.software_bypass_log_f = fopen(varValue, "w");
+            if (!afpc->sw_bypass.software_bypass_log_f) {
+                SET_ERROR(modinst, "%s: Could not open bypass log file: %s", __func__, strerror(errno));
+                goto err;
+            }
+            fprintf(afpc->sw_bypass.software_bypass_log_f, "0\n");
+        }
         if (!strcmp(varKey, "buffer_size_mb"))
             size_str = varValue;
         else if (!strcmp(varKey, "debug"))
@@ -889,6 +1007,15 @@ static int afpacket_daq_instantiate(const DAQ_ModuleConfig_h modcfg, DAQ_ModuleI
         daq_base_api.config_next_variable(modcfg, &varKey, &varValue);
     }
 
+    if (daq_base_api.config_get_mode(modcfg) == DAQ_MODE_PASSIVE) {
+        afpc->sw_bypass.upper_threshold = 0;
+        afpc->sw_bypass.lower_threshold = 0;
+        afpc->sw_bypass.sampling_rate = 0;
+    }
+
+    if (afpc->sw_bypass.upper_threshold == 0 || afpc->sw_bypass.lower_threshold == 0) {
+        afpc->sw_bypass.sampling_rate = 0;
+    }
     uint32_t size;
     if (size_str && strcmp("max", size_str) != 0)
         size = strtoul(size_str, NULL, 10);
@@ -1018,6 +1145,13 @@ static void afpacket_daq_destroy(void *handle)
     if (afpc->filter)
         free(afpc->filter);
     destroy_packet_pool(afpc);
+    if (afpc->sw_bypass.software_bypass_log_f) {
+        software_bypass_stats_print_line(afpc);
+        fclose(afpc->sw_bypass.software_bypass_log_f);
+    }
+    if (afpc->sw_bypass.software_bypass_log) {
+        free(afpc->sw_bypass.software_bypass_log);
+    }
     free(afpc);
 }
 
@@ -1216,10 +1350,18 @@ static int afpacket_daq_ioctl(void *handle, DAQ_IoctlCmd cmd, void *arg, size_t 
 static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats)
 {
     AFPacket_Context_t *afpc = (AFPacket_Context_t *) handle;
-
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
-
+    stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
+    
+    if(afpc->debug){
+        printf("[STATS] Reporting: received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
+            afpc->stats.packets_received,
+            afpc->sw_bypass.pkts_bypassed,
+            afpc->stats.packets_filtered,
+            afpc->stats.bypass_activations);
+    }
+    afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
     return DAQ_SUCCESS;
 }
 
@@ -1248,6 +1390,7 @@ static uint32_t afpacket_daq_get_capabilities(void *handle)
 #ifdef LIBPCAP_AVAILABLE
     capabilities |= DAQ_CAPA_BPF;
 #endif
+    capabilities |= DAQ_CAPA_SOFT_BYPASS;
     return capabilities;
 }
 
@@ -1355,6 +1498,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
 
     while (idx < max_recv)
     {
+
         /* Check to see if the receive has been canceled.  If so, reset it and return appropriately. */
         if (afpc->interrupted)
         {
@@ -1370,6 +1514,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             status = DAQ_RSTAT_NOBUF;
             break;
         }
+
 
         /* Try to find a packet ready for processing from one of the RX rings. */
         AFPacketEntry *entry = find_packet(afpc);
@@ -1437,7 +1582,22 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             continue;
         }
 #endif
-        afpc->stats.packets_received++;
+
+        if (afpc->sw_bypass.pkts_to_bypass > 0) {
+            if (instance->peer) {
+                afpacket_transmit_packet(instance->peer, data, tp_snaplen);
+                afpc->sw_bypass.pkts_bypassed++;
+                afpc->sw_bypass.pkts_to_bypass--;
+                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+            }
+            continue;
+        } else {
+            afpc->stats.packets_received++;
+        }
+
+        if (afpc->sw_bypass.sampling_rate > 0){
+            update_soft_bypass_status(afpc);
+        }
 
         /* Populate the packet descriptor, copying the packet data and releasing the packet
            ring entry back to the kernel for reuse. */
@@ -1529,7 +1689,7 @@ const DAQ_ModuleAPI_t afpacket_daq_module_data =
     /* .api_version = */ DAQ_MODULE_API_VERSION,
     /* .api_size = */ sizeof(DAQ_ModuleAPI_t),
     /* .module_version = */ DAQ_AFPACKET_VERSION,
-    /* .name = */ "afpacket",
+    /* .name = */ "redborder_afpacket",
     /* .type = */ DAQ_TYPE_INTF_CAPABLE | DAQ_TYPE_INLINE_CAPABLE | DAQ_TYPE_MULTI_INSTANCE,
     /* .load = */ afpacket_daq_module_load,
     /* .unload = */ afpacket_daq_module_unload,

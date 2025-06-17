@@ -1554,31 +1554,41 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
 
         update_soft_bypass_status(afpc);
 
+        /* ---- Bypass batch loop ---- */
         if (afpc->sw_bypass.pkts_to_bypass > 0) {
-            AFPacketInstance *instance;    
             instance = afpc->curr_instance;
+            unsigned to_do = afpc->sw_bypass.pkts_to_bypass;
+            unsigned can_do = max_recv - idx;
+            unsigned batch = (to_do < can_do) ? to_do : can_do;
 
-            afpacket_debug(afpc, "Bypassing packet (%lu remaining to bypass)\n", 
-                          afpc->sw_bypass.pkts_to_bypass);
+            afpacket_debug(afpc,
+                "Batch‐bypassing %u packets (of %lu pending)\n",
+                batch, afpc->sw_bypass.pkts_to_bypass);
 
-            if (instance->peer) {
-                int ret = afpacket_transmit_packet(instance->peer, 
-                                       entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
-                                       entry->hdr.h2->tp_snaplen);
+            for (unsigned i = 0; i < batch; i++) {
+                int ret = DAQ_RSTAT_OK;
+                if (instance->peer) {
+                    ret = afpacket_transmit_packet(
+                        instance->peer,
+                        entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
+                        entry->hdr.h2->tp_snaplen
+                    );
+                    entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+                }
                 if (ret == DAQ_SUCCESS) {
                     afpc->sw_bypass.pkts_bypassed++;
-                    afpc->sw_bypass.pkts_to_bypass--;
-                    afpacket_debug(afpc, "Bypassed packet successfully (total bypassed: %lu)\n",
-                                  afpc->sw_bypass.pkts_bypassed);
                 } else {
                     afpacket_debug(afpc, "Failed to bypass packet: %d\n", ret);
                 }
-                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
-                status = DAQ_RSTAT_OK;
-                break;
+                afpc->sw_bypass.pkts_to_bypass--;
+                idx++;
             }
-            continue;
+
+            /* Return what we did in one go */
+            status = (idx > 0 ? DAQ_RSTAT_OK : DAQ_RSTAT_WOULD_BLOCK);
+            break;
         }
+        /* ---- End bypass batch ---- */
 
         unsigned int tp_len, tp_mac, tp_snaplen, tp_sec, tp_usec;
         tp_len = entry->hdr.h2->tp_len;

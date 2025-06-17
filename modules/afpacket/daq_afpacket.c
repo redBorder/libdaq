@@ -185,26 +185,6 @@ static DAQ_BaseAPI_t daq_base_api;
 static pthread_mutex_t bpf_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-static inline void afpacket_debug(AFPacket_Context_t *afpc, const char *format, ...)
-{
-    if (!afpc->debug)
-        return;
-    
-    va_list args;
-    va_start(args, format);
-    vprintf(format, args);
-    va_end(args);
-}
-
-#ifndef AFPACKET_EXTRA_DEBUG
-#define AFPACKET_EXTRA_DEBUG 1
-#endif
-#if AFPACKET_EXTRA_DEBUG
-#define AFPACKET_LOG(afpc, ...) afpacket_debug(afpc, __VA_ARGS__)
-#else
-#define AFPACKET_LOG(afpc, ...)
-#endif
-
 static void destroy_packet_pool(AFPacket_Context_t *afpc)
 {
     AFPacketMsgPool *pool = &afpc->pool;
@@ -309,14 +289,7 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
 }
 
 static void update_soft_bypass_status(AFPacket_Context_t *context) {
-    AFPACKET_LOG(context, "[BYPASS_STATUS] Entering update_soft_bypass_status. pkts_to_bypass=%lu, sampling_rate=%lu, current_received=%lu, pkts_bypassed=%lu, bypass_activations=%lu\n",
-                  context->sw_bypass.pkts_to_bypass, context->sw_bypass.sampling_rate,
-                  context->stats.packets_received, context->sw_bypass.pkts_bypassed,
-                  context->stats.bypass_activations);
-
     if (context->sw_bypass.sampling_rate == 0) {
-        afpacket_debug(context, "Bypass sampling rate is 0 - bypass disabled\n");
-        AFPACKET_LOG(context, "[BYPASS_STATUS] Sampling rate is 0. Bypass inactive.\n");
         return;
     }
 
@@ -325,53 +298,21 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
          context->sw_bypass.sampling_rate == 0)) {
 
         const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
-        afpacket_debug(context, "Checking queue thresholds (current: %u, upper: %lu, lower: %lu)\n",
-                      num_queued_packets, context->sw_bypass.upper_threshold, 
-                      context->sw_bypass.lower_threshold);
-        AFPACKET_LOG(context, "[BYPASS_STATUS] Sampling point reached. pkts_to_bypass is 0. Queue check: current=%u, upper=%lu, lower=%lu\n",
-                      num_queued_packets, context->sw_bypass.upper_threshold, context->sw_bypass.lower_threshold);
-
         if (num_queued_packets > context->sw_bypass.upper_threshold) {
             context->sw_bypass.pkts_to_bypass = 
                 (num_queued_packets - context->sw_bypass.lower_threshold) + 
                 context->sw_bypass.sampling_rate;
-            afpacket_debug(context, "Queue above upper threshold - activating bypass for %lu packets\n",
-                          context->sw_bypass.pkts_to_bypass);
-            AFPACKET_LOG(context, "[BYPASS_STATUS] Queue above upper threshold. Activating bypass for %lu packets.\n",
-                          context->sw_bypass.pkts_to_bypass);
-            context->stats.bypass_activations++;
-            AFPACKET_LOG(context, "[BYPASS_STATUS] Bypass activated. Total activations: %lu\n",
-                          context->stats.bypass_activations);
-        } else {
-            AFPACKET_LOG(context, "[BYPASS_STATUS] Queue below upper threshold. Bypass remains inactive.\n");
         }
     } else if (context->sw_bypass.pkts_to_bypass == 1) {
         const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
-        afpacket_debug(context, "Bypass ending - checking queue levels (current: %u, lower: %lu)\n",
-                      num_queued_packets, context->sw_bypass.lower_threshold);
-        AFPACKET_LOG(context, "[BYPASS_STATUS] pkts_to_bypass is 1 (ending soon). Queue check: current=%u, lower=%lu\n",
-                      num_queued_packets, context->sw_bypass.lower_threshold);
-
         if (num_queued_packets > context->sw_bypass.lower_threshold) {
             context->sw_bypass.pkts_to_bypass = 
                 (num_queued_packets - context->sw_bypass.lower_threshold) + 
                 context->sw_bypass.sampling_rate;
-            afpacket_debug(context, "Queue still above lower threshold - extending bypass for %lu packets\n",
-                          context->sw_bypass.pkts_to_bypass);
-            AFPACKET_LOG(context, "[BYPASS_STATUS] Queue still above lower threshold. Extending bypass for %lu packets.\n",
-                          context->sw_bypass.pkts_to_bypass);
         } else {
-            afpacket_debug(context, "Queue below lower threshold - ending bypass\n");
-            AFPACKET_LOG(context, "[BYPASS_STATUS] Queue below lower threshold. Ending bypass. pkts_to_bypass set to 0.\n");
-            context->sw_bypass.pkts_to_bypass = 0; 
             software_bypass_stats_print_line(context);
         }
-    } else if (context->sw_bypass.pkts_to_bypass > 1) {
-        AFPACKET_LOG(context, "[BYPASS_STATUS] Bypass active. pkts_to_bypass=%lu (no decision this cycle)\n",
-                      context->sw_bypass.pkts_to_bypass);
     }
-    AFPACKET_LOG(context, "[BYPASS_STATUS] Exiting update_soft_bypass_status. Final pkts_to_bypass=%lu, bypass_activations=%lu\n",
-                  context->sw_bypass.pkts_to_bypass, context->stats.bypass_activations);
 }
 
 static int bind_instance_interface(AFPacket_Context_t *afpc, AFPacketInstance *instance, int protocol)
@@ -902,9 +843,7 @@ static void reset_stats(AFPacket_Context_t *afpc)
     socklen_t len = sizeof (struct tpacket_stats);
 
     memset(&afpc->stats, 0, sizeof(DAQ_Stats_t));
-    /* Initialize the new counter */
     afpc->stats.bypass_activations = 0;
-    /* Just call PACKET_STATISTICS to clear each instance's stats. */
     for (instance = afpc->instances; instance; instance = instance->next)
         getsockopt(instance->fd, SOL_PACKET, PACKET_STATISTICS, &kstats, &len);
 }
@@ -1414,9 +1353,14 @@ static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats)
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
     stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
-    AFPACKET_LOG(afpc, "[STATS] Reporting: received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
-                  afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
-                  afpc->stats.packets_filtered, afpc->stats.bypass_activations);
+    
+    if(afpc->debug){
+        printf("[STATS] Reporting: received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
+            afpc->stats.packets_received,
+            afpc->sw_bypass.pkts_bypassed,
+            afpc->stats.packets_filtered,
+            afpc->stats.bypass_activations);
+    }
     afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
     return DAQ_SUCCESS;
 }
@@ -1639,7 +1583,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
         }
 #endif
 
-        if (afpc->sw_bypass.pkts_to_bypass > 0 && afpc->sw_bypass.sampling_rate > 0) {
+        if (afpc->sw_bypass.pkts_to_bypass > 0) {
             if (instance->peer) {
                 afpacket_transmit_packet(instance->peer, data, tp_snaplen);
                 afpc->sw_bypass.pkts_bypassed++;

@@ -253,19 +253,20 @@ static uint64_t afpacket_daq_total_queued(AFPacket_Context_t *context) {
     uint64_t total_queued = 0;
 
     for (instance = context->instances; instance; instance = instance->next) {
-        if (instance->active) {
-            AFPacketEntry *entry = instance->rx_ring.cursor;
-            unsigned int count = 0;
-            
-            do {
-                if (entry->hdr.h2->tp_status & TP_STATUS_USER)
-                    count++;
-                entry = entry->next;
-            } while (entry != instance->rx_ring.cursor);
-            
-            total_queued += count;
-        }
+        if (!instance->active)
+            continue;
+
+        AFPacketEntry *entry = instance->rx_ring.cursor;
+        AFPacketEntry *start = entry;
+        
+        do {
+            if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+                total_queued++;
+            }
+            entry = entry->next;
+        } while (entry != start);
     }
+
     return total_queued;
 }
 
@@ -304,9 +305,10 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
             context->sw_bypass.pkts_to_bypass = 
                 (num_queued_packets - context->sw_bypass.lower_threshold) + 
                 context->sw_bypass.sampling_rate;
+        } else {
+            software_bypass_stats_print_line(context);
         }
     }
-software_bypass_stats_print_line(context);
 }
 
 static int bind_instance_interface(AFPacket_Context_t *afpc, AFPacketInstance *instance, int protocol)

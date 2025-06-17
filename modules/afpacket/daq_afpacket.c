@@ -254,11 +254,16 @@ static uint64_t afpacket_daq_total_queued(AFPacket_Context_t *context) {
 
     for (instance = context->instances; instance; instance = instance->next) {
         if (instance->active) {
-            struct tpacket_stats stats;
-            socklen_t len = sizeof(stats);
-            if (getsockopt(instance->fd, SOL_PACKET, PACKET_STATISTICS, &stats, &len) == 0) {
-                total_queued += stats.tp_packets - stats.tp_drops;
-            }
+            AFPacketEntry *entry = instance->rx_ring.cursor;
+            unsigned int count = 0;
+            
+            do {
+                if (entry->hdr.h2->tp_status & TP_STATUS_USER)
+                    count++;
+                entry = entry->next;
+            } while (entry != instance->rx_ring.cursor);
+            
+            total_queued += count;
         }
     }
     return total_queued;

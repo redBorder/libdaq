@@ -1486,8 +1486,6 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
 
     while (idx < max_recv)
     {
-        /* redBorder */
-        update_soft_bypass_status(afpc);
 
         /* Check to see if the receive has been canceled.  If so, reset it and return appropriately. */
         if (afpc->interrupted)
@@ -1505,6 +1503,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             break;
         }
 
+
         /* Try to find a packet ready for processing from one of the RX rings. */
         AFPacketEntry *entry = find_packet(afpc);
         if (!entry)
@@ -1519,22 +1518,6 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             status = wait_for_packet(afpc);
             if (status != DAQ_RSTAT_OK)
                 break;
-            continue;
-        }
-
-        if (afpc->sw_bypass.pkts_to_bypass > 0) {
-
-            AFPacketInstance *instance;    
-            instance = afpc->curr_instance;
-
-            if (instance->peer) {
-                afpacket_transmit_packet(instance->peer, 
-                                       entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
-                                       entry->hdr.h2->tp_snaplen);
-                afpc->sw_bypass.pkts_bypassed++;
-                afpc->sw_bypass.pkts_to_bypass--;
-                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
-            }
             continue;
         }
 
@@ -1587,7 +1570,22 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             continue;
         }
 #endif
-        afpc->stats.packets_received++;
+
+        if (afpc->sw_bypass.sampling_rate > 0){
+            update_soft_bypass_status(afpc);
+        }
+        
+        if (afpc->sw_bypass.pkts_to_bypass > 0) {
+            if (instance->peer) {
+                afpacket_transmit_packet(instance->peer, data, tp_snaplen);
+                afpc->sw_bypass.pkts_bypassed++;
+                afpc->sw_bypass.pkts_to_bypass--;
+                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+            }
+            continue;
+        } else {
+            afpc->stats.packets_received++;
+        }
 
         /* Populate the packet descriptor, copying the packet data and releasing the packet
            ring entry back to the kernel for reuse. */

@@ -249,22 +249,6 @@ static int create_packet_pool(AFPacket_Context_t *afpc, unsigned size)
     return DAQ_SUCCESS;
 }
 
-static uint32_t count_queued_packets(AFPacketInstance *instance) {
-    uint32_t count = 0;
-    uint32_t ring_size = instance->rx_ring.layout.tp_frame_nr;
-    AFPacketEntry *entry = instance->rx_ring.cursor;
-    AFPacketEntry *start = entry;
-
-    for (uint32_t i = 0; i < ring_size; i++) {
-        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
-            count++;
-        }
-        entry = entry->next;
-    }
-
-    return count;
-}
-
 static inline void afpacket_debug(AFPacket_Context_t *afpc, const char *format, ...)
 {
     if (!afpc->debug)

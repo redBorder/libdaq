@@ -1534,7 +1534,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
                 {
                     afpc->sw_bypass.pkts_bypassed++;
                     afpc->sw_bypass.pkts_to_bypass--;
-                    afpc->stats.hw_packets_bypassed++;
+                 //   afpc->stats.hw_packets_bypassed++;
                 }
             }
             entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
@@ -1607,7 +1607,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             continue;
         }
     
-         update_soft_bypass_status(afpc);
+        update_soft_bypass_status(afpc);
 
         unsigned int tp_len, tp_mac, tp_snaplen, tp_sec, tp_usec;
         tp_len = entry->hdr.h2->tp_len;

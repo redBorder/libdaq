@@ -1557,35 +1557,44 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
         /* ---- Bypass batch loop ---- */
         if (afpc->sw_bypass.pkts_to_bypass > 0) {
             instance = afpc->curr_instance;
-            unsigned to_do = afpc->sw_bypass.pkts_to_bypass;
             unsigned can_do = max_recv - idx;
-            unsigned batch = (to_do < can_do) ? to_do : can_do;
+            unsigned done = 0;
 
             afpacket_debug(afpc,
-                "Batch‐bypassing %u packets (of %lu pending)\n",
-                batch, afpc->sw_bypass.pkts_to_bypass);
+                "Batch‑bypassing up to %u packets (of %lu pending)\n",
+                can_do, afpc->sw_bypass.pkts_to_bypass);
 
-            for (unsigned i = 0; i < batch; i++) {
-                int ret = DAQ_RSTAT_OK;
+            while (afpc->sw_bypass.pkts_to_bypass > 0 && done < can_do) {
+                AFPacketEntry *be = find_packet(afpc);
+                if (!be) {
+                    /* no more packets ready right now */
+                    break;
+                }
+
+                int ret = NULL;
                 if (instance->peer) {
                     ret = afpacket_transmit_packet(
                         instance->peer,
-                        entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
-                        entry->hdr.h2->tp_snaplen
+                        be->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
+                        be->hdr.h2->tp_snaplen
                     );
-                    entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
                 }
+
+                /* immediately return descriptor to kernel */
+                be->hdr.h2->tp_status = TP_STATUS_KERNEL;
+
                 if (ret == DAQ_SUCCESS) {
                     afpc->sw_bypass.pkts_bypassed++;
                 } else {
                     afpacket_debug(afpc, "Failed to bypass packet: %d\n", ret);
                 }
+
                 afpc->sw_bypass.pkts_to_bypass--;
-                idx++;
+                done++;
             }
 
-            /* Return what we did in one go */
-            status = (idx > 0 ? DAQ_RSTAT_OK : DAQ_RSTAT_WOULD_BLOCK);
+            idx += done;
+            status = (done > 0 ? DAQ_RSTAT_OK : DAQ_RSTAT_WOULD_BLOCK);
             break;
         }
         /* ---- End bypass batch ---- */

@@ -283,9 +283,6 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
 }
 
 static void update_soft_bypass_status(AFPacket_Context_t *context) {
-    if (context->sw_bypass.sampling_rate == 0) {
-        return;
-    }
     if (context->sw_bypass.pkts_to_bypass == 0 &&
         ((context->stats.packets_received + context->sw_bypass.pkts_bypassed) % 
          context->sw_bypass.sampling_rate == 0)) {
@@ -302,10 +299,9 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
             context->sw_bypass.pkts_to_bypass = 
                 (num_queued_packets - context->sw_bypass.lower_threshold) + 
                 context->sw_bypass.sampling_rate;
-        } else {
-            software_bypass_stats_print_line(context);
         }
     }
+software_bypass_stats_print_line(context);
 }
 
 static int bind_instance_interface(AFPacket_Context_t *afpc, AFPacketInstance *instance, int protocol)

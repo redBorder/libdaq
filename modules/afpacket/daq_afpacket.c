@@ -1514,55 +1514,12 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
     DAQ_RecvStatus status = DAQ_RSTAT_OK;
     unsigned idx = 0;
 
-    if (afpc->sw_bypass.pkts_to_bypass > 0)
-    {
-        while (idx < max_recv && afpc->sw_bypass.pkts_to_bypass > 0)
-        {
-            AFPacketEntry *entry = find_packet(afpc);
-            if (!entry)
-            {
-                break;
-            }
-
-            instance = afpc->curr_instance;
-            if (instance->peer)
-            {
-                int ret = afpacket_transmit_packet(instance->peer, 
-                                   entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
-                                   entry->hdr.h2->tp_snaplen);
-                if (ret == DAQ_SUCCESS)
-                {
-                    afpc->sw_bypass.pkts_bypassed++;
-                    afpc->sw_bypass.pkts_to_bypass--;
-                 //   afpc->stats.hw_packets_bypassed++;
-                }
-            }
-            entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
-            
-            idx++;
-        }
-
-        if (afpc->sw_bypass.pkts_to_bypass == 0)
-        {
-            uint32_t num_queued_packets = afpacket_daq_total_queued(afpc);
-            if (num_queued_packets > afpc->sw_bypass.lower_threshold)
-            {
-                afpc->sw_bypass.pkts_to_bypass = 
-                    (num_queued_packets - afpc->sw_bypass.lower_threshold) + 
-                    afpc->sw_bypass.sampling_rate;
-            }
-            else
-            {
-                software_bypass_stats_print_line(afpc);
-            }
-        }
-
-        *rstat = DAQ_RSTAT_OK;
-        return idx;
-    }
-
     while (idx < max_recv)
     {
+        /* redBorder */
+       // update_soft_bypass_status(afpc);
+
+        /* Check to see if the receive has been canceled.  If so, reset it and return appropriately. */
         if (afpc->interrupted)
         {
             afpc->interrupted = false;
@@ -1570,22 +1527,7 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             break;
         }
 
-        if (afpc->sw_bypass.sampling_rate > 0 && 
-            (afpc->stats.packets_received + afpc->sw_bypass.pkts_bypassed) % 
-             afpc->sw_bypass.sampling_rate == 0)
-        {
-            uint32_t num_queued_packets = afpacket_daq_total_queued(afpc);
-            if (num_queued_packets > afpc->sw_bypass.upper_threshold)
-            {
-                afpc->sw_bypass.pkts_to_bypass = 
-                    (num_queued_packets - afpc->sw_bypass.lower_threshold) + 
-                    afpc->sw_bypass.sampling_rate;
-                
-                *rstat = DAQ_RSTAT_OK;
-                return idx;
-            }
-        }
-
+        /* Make sure that we have a packet descriptor available to populate. */
         AFPacketPktDesc *desc = afpc->pool.freelist;
         if (!desc)
         {
@@ -1593,9 +1535,12 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             break;
         }
 
+        /* Try to find a packet ready for processing from one of the RX rings. */
         AFPacketEntry *entry = find_packet(afpc);
         if (!entry)
         {
+            /* Only block waiting for a packet if we haven't received anything yet. */
+            /* FIXIT-L - Bad interaction with leading packets filtered by BPF? */
             if (idx != 0)
             {
                 status = DAQ_RSTAT_WOULD_BLOCK;
@@ -1606,8 +1551,34 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
                 break;
             continue;
         }
-    
+
         update_soft_bypass_status(afpc);
+
+        if (afpc->sw_bypass.pkts_to_bypass > 0) {
+            AFPacketInstance *instance;    
+            instance = afpc->curr_instance;
+
+            afpacket_debug(afpc, "Bypassing packet (%lu remaining to bypass)\n", 
+                          afpc->sw_bypass.pkts_to_bypass);
+
+            if (instance->peer) {
+                int ret = afpacket_transmit_packet(instance->peer, 
+                                       entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
+                                       entry->hdr.h2->tp_snaplen);
+                if (ret == DAQ_SUCCESS) {
+                    afpc->sw_bypass.pkts_bypassed++;
+                    afpc->sw_bypass.pkts_to_bypass--;
+                    afpacket_debug(afpc, "Bypassed packet successfully (total bypassed: %lu)\n",
+                                  afpc->sw_bypass.pkts_bypassed);
+                } else {
+                    afpacket_debug(afpc, "Failed to bypass packet: %d\n", ret);
+                }
+                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+                status = DAQ_RSTAT_OK;
+                break;
+            }
+            continue;
+        }
 
         unsigned int tp_len, tp_mac, tp_snaplen, tp_sec, tp_usec;
         tp_len = entry->hdr.h2->tp_len;

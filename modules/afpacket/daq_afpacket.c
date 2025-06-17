@@ -1571,10 +1571,6 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
         }
 #endif
 
-        if (afpc->sw_bypass.sampling_rate > 0){
-            update_soft_bypass_status(afpc);
-        }
-        
         if (afpc->sw_bypass.pkts_to_bypass > 0) {
             if (instance->peer) {
                 afpacket_transmit_packet(instance->peer, data, tp_snaplen);
@@ -1585,6 +1581,10 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             continue;
         } else {
             afpc->stats.packets_received++;
+        }
+
+        if (afpc->sw_bypass.sampling_rate > 0){
+            update_soft_bypass_status(afpc);
         }
 
         /* Populate the packet descriptor, copying the packet data and releasing the packet

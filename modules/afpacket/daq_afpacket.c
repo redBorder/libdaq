@@ -363,7 +363,7 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
         } else {
             afpacket_debug(context, "Queue below lower threshold - ending bypass\n");
             AFPACKET_LOG(context, "[BYPASS_STATUS] Queue below lower threshold. Ending bypass. pkts_to_bypass set to 0.\n");
-            context->sw_bypass.pkts_to_bypass = 0; // Explicitly set to 0 to ensure it ends
+            context->sw_bypass.pkts_to_bypass = 0; 
             software_bypass_stats_print_line(context);
         }
     } else if (context->sw_bypass.pkts_to_bypass > 1) {
@@ -1414,8 +1414,8 @@ static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats)
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
     stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
-    AFPACKET_LOG(afpc, "[STATS] Reporting: received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
-                 afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
+    AFPACKET_LOG(afpc, "[STATS] Reporting: analyzed=%lu, received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
+                  afpc->stats.packets_analyzed, afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
                   afpc->stats.packets_filtered, afpc->stats.bypass_activations);
     afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
     return DAQ_SUCCESS;
@@ -1745,7 +1745,7 @@ const DAQ_ModuleAPI_t afpacket_daq_module_data =
     /* .api_version = */ DAQ_MODULE_API_VERSION,
     /* .api_size = */ sizeof(DAQ_ModuleAPI_t),
     /* .module_version = */ DAQ_AFPACKET_VERSION,
-    /* .name = */ "afpacket",
+    /* .name = */ "redborder_afpacket",
     /* .type = */ DAQ_TYPE_INTF_CAPABLE | DAQ_TYPE_INLINE_CAPABLE | DAQ_TYPE_MULTI_INSTANCE,
     /* .load = */ afpacket_daq_module_load,
     /* .unload = */ afpacket_daq_module_unload,

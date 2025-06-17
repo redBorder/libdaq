@@ -885,7 +885,7 @@ static int afpacket_daq_instantiate(const DAQ_ModuleConfig_h modcfg, DAQ_ModuleI
                 goto err;
             }
         }
-        else if (!strcpm(varKey, "use_software_bypass")){
+        else if (!strcmp(varKey, "use_software_bypass")){
             afpc->use_software_bypass = true;
         }
         else if (!strcmp(varKey, "use_tx_ring"))

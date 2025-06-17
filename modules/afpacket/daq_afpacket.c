@@ -1379,9 +1379,9 @@ static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats) {
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
 
-    stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
-    afpacket_debug(afpc, "Bypass stats - total: %lu, new: %lu\n",
-                  afpc->sw_bypass.pkts_bypassed, stats->hw_packets_bypassed);
+   // stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
+    //afpacket_debug(afpc, "Bypass stats - total: %lu, new: %lu\n",
+      //            afpc->sw_bypass.pkts_bypassed, stats->hw_packets_bypassed);
     afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
 
     return DAQ_SUCCESS;
@@ -1412,7 +1412,7 @@ static uint32_t afpacket_daq_get_capabilities(void *handle)
 #ifdef LIBPCAP_AVAILABLE
     capabilities |= DAQ_CAPA_BPF;
 #endif
-    capabilities |= DAQ_CAPA_SOFT_BYPASS;
+  //  capabilities |= DAQ_CAPA_SOFT_BYPASS;
     return capabilities;
 }
 

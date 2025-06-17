@@ -38,8 +38,6 @@
 /m4/lt~obsolete.m4
 /missing
 /stamp-h1
-Makefile
-Makefile.in
 
 # Coverage artifacts
 *.gcda
@@ -63,3 +61,5 @@ example/daqtest-static
 
 # Other things
 *.swp
+**SOURCES
+**pkgs

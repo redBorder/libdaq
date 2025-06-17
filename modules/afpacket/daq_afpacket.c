@@ -278,7 +278,6 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
     }
 }
 
-// Counts queued packets for a single instance by scanning ring frames
 static uint32_t count_queued_packets(AFPacketInstance *instance) {
     uint32_t count = 0;
     uint32_t ring_size = instance->rx_ring.layout.tp_frame_nr;
@@ -293,7 +292,6 @@ static uint32_t count_queued_packets(AFPacketInstance *instance) {
     return count;
 }
 
-// Sums queued packets over all active instances
 static uint32_t count_queued_packets_for_context(AFPacket_Context_t *context) {
     uint32_t total = 0;
     AFPacketInstance *instance;
@@ -1430,46 +1428,67 @@ static int afpacket_daq_get_datalink_type(void *handle)
 
 static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
 {
-    AFPacketInstance *instance;
-    AFPacketEntry *entry;
+    AFPacketInstance *instance = afpc->curr_instance;
+    AFPacketEntry   *entry;
+
+    /* 1) Drain all bypass packets in one spin */
+    while (afpc->sw_bypass.pkts_to_bypass > 0) {
+        /* Try to grab the next ready packet */
+        AFPacketEntry *be = _internal_find_one_ready(afpc, &instance);
+        if (!be) {
+            /* no more packets right now — let caller block or retry */
+            break;
+        }
+
+        /* Forward it immediately */
+        uint8_t *data = be->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen);
+        uint32_t len = be->hdr.h2->tp_snaplen;
+        int ret = NULL;
+        if (instance->peer) {
+            ret = afpacket_transmit_packet(instance->peer, data, len);
+        }
+        be->hdr.h2->tp_status = TP_STATUS_KERNEL;
+
+        afpc->sw_bypass.pkts_to_bypass--;
+        if (ret == DAQ_SUCCESS)
+            afpc->sw_bypass.pkts_bypassed++;
+        else
+            afpacket_debug(afpc, "Bypass failed in find_packet: %d\n", ret);
+    }
 
     instance = afpc->curr_instance;
-    do
-    {
+    do {
         instance = instance->next ? instance->next : afpc->instances;
-        if (instance->rx_ring.cursor->hdr.h2->tp_status & TP_STATUS_USER)
-        {
+        entry = instance->rx_ring.cursor;
+        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
             afpc->curr_instance = instance;
-            entry = instance->rx_ring.cursor;
             instance->rx_ring.cursor = entry->next;
-
-            if (afpc->sw_bypass.pkts_to_bypass > 0)
-            {
-                uint8_t *data = entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen);
-                uint32_t len = entry->hdr.h2->tp_snaplen;
-
-                int ret = NULL;
-                if (instance->peer) {
-                    ret = afpacket_transmit_packet(instance->peer, data, len);
-                }
-
-                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
-
-                afpc->sw_bypass.pkts_to_bypass--;
-                if (ret == DAQ_SUCCESS)
-                    afpc->sw_bypass.pkts_bypassed++;
-                else
-                    afpacket_debug(afpc, "Bypass failed in find_packet: %d\n", ret);
-
-                return NULL;
-            }
-
             return entry;
         }
     } while (instance != afpc->curr_instance);
 
     return NULL;
 }
+
+static AFPacketEntry *_internal_find_one_ready(AFPacket_Context_t *afpc, AFPacketInstance **inst_ptr)
+{
+    AFPacketInstance *instance = *inst_ptr;
+    AFPacketEntry   *entry;
+
+    do {
+        instance = instance->next ? instance->next : afpc->instances;
+        entry = instance->rx_ring.cursor;
+        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            *inst_ptr = instance;
+            afpc->curr_instance = instance;
+            instance->rx_ring.cursor = entry->next;
+            return entry;
+        }
+    } while (instance != *inst_ptr);
+
+    return NULL;
+}
+
 static inline DAQ_RecvStatus wait_for_packet(AFPacket_Context_t *afpc)
 {
     AFPacketInstance *instance;

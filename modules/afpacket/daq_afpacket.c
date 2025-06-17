@@ -295,11 +295,6 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
 }
 
 static void update_soft_bypass_status(AFPacket_Context_t *context) {
-    if (context->sw_bypass.sampling_rate == 0) {
-        afpacket_debug(context, "Bypass sampling rate is 0 - bypass disabled\n");
-        return;
-    }
-
     if (context->sw_bypass.pkts_to_bypass == 0 &&
         ((context->stats.packets_received + context->sw_bypass.pkts_bypassed) % 
          context->sw_bypass.sampling_rate == 0)) {
@@ -1556,6 +1551,8 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
                 break;
             continue;
         }
+
+        update_soft_bypass_status(afpc);
 
         if (afpc->sw_bypass.pkts_to_bypass > 0) {
             AFPacketInstance *instance;    

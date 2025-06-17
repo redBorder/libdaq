@@ -249,20 +249,20 @@ static int create_packet_pool(AFPacket_Context_t *afpc, unsigned size)
     return DAQ_SUCCESS;
 }
 
-static uint64_t afpacket_daq_total_queued(AFPacket_Context_t *context) {
-    AFPacketInstance *instance;
-    uint64_t total_queued = 0;
+static uint32_t count_queued_packets(AFPacketInstance *instance) {
+    uint32_t count = 0;
+    uint32_t ring_size = instance->rx_ring.layout.tp_frame_nr;
+    AFPacketEntry *entry = instance->rx_ring.cursor;
+    AFPacketEntry *start = entry;
 
-    for (instance = context->instances; instance; instance = instance->next) {
-        if (instance->active) {
-            struct tpacket_stats stats;
-            socklen_t len = sizeof(stats);
-            if (getsockopt(instance->fd, SOL_PACKET, PACKET_STATISTICS, &stats, &len) == 0) {
-                total_queued += stats.tp_packets - stats.tp_drops;
-            }
+    for (uint32_t i = 0; i < ring_size; i++) {
+        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            count++;
         }
+        entry = entry->next;
     }
-    return total_queued;
+
+    return count;
 }
 
 static inline void afpacket_debug(AFPacket_Context_t *afpc, const char *format, ...)
@@ -294,12 +294,40 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
     }
 }
 
+// Counts queued packets for a single instance by scanning ring frames
+static uint32_t count_queued_packets(AFPacketInstance *instance) {
+    uint32_t count = 0;
+    uint32_t ring_size = instance->rx_ring.layout.tp_frame_nr;
+    AFPacketEntry *entry = instance->rx_ring.cursor;
+
+    for (uint32_t i = 0; i < ring_size; i++) {
+        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            count++;
+        }
+        entry = entry->next;
+    }
+    return count;
+}
+
+// Sums queued packets over all active instances
+static uint32_t count_queued_packets_for_context(AFPacket_Context_t *context) {
+    uint32_t total = 0;
+    AFPacketInstance *instance;
+    for (instance = context->instances; instance; instance = instance->next) {
+        if (instance->active) {
+            total += count_queued_packets(instance);
+        }
+    }
+    return total;
+}
+
 static void update_soft_bypass_status(AFPacket_Context_t *context) {
+    uint32_t num_queued_packets = count_queued_packets_for_context(context);
+
     if (context->sw_bypass.pkts_to_bypass == 0 &&
         ((context->stats.packets_received + context->sw_bypass.pkts_bypassed) % 
          context->sw_bypass.sampling_rate == 0)) {
 
-        const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
         afpacket_debug(context, "Checking queue thresholds (current: %u, upper: %lu, lower: %lu)\n",
                       num_queued_packets, context->sw_bypass.upper_threshold, 
                       context->sw_bypass.lower_threshold);
@@ -312,7 +340,6 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
                           context->sw_bypass.pkts_to_bypass);
         }
     } else if (context->sw_bypass.pkts_to_bypass == 1) {
-        const uint32_t num_queued_packets = afpacket_daq_total_queued(context);
         afpacket_debug(context, "Bypass ending - checking queue levels (current: %u, lower: %lu)\n",
                       num_queued_packets, context->sw_bypass.lower_threshold);
 
@@ -1431,13 +1458,34 @@ static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
             afpc->curr_instance = instance;
             entry = instance->rx_ring.cursor;
             instance->rx_ring.cursor = entry->next;
+
+            if (afpc->sw_bypass.pkts_to_bypass > 0)
+            {
+                uint8_t *data = entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen);
+                uint32_t len = entry->hdr.h2->tp_snaplen;
+
+                int ret = NULL;
+                if (instance->peer) {
+                    ret = afpacket_transmit_packet(instance->peer, data, len);
+                }
+
+                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+
+                afpc->sw_bypass.pkts_to_bypass--;
+                if (ret == DAQ_SUCCESS)
+                    afpc->sw_bypass.pkts_bypassed++;
+                else
+                    afpacket_debug(afpc, "Bypass failed in find_packet: %d\n", ret);
+
+                return NULL;
+            }
+
             return entry;
         }
     } while (instance != afpc->curr_instance);
 
     return NULL;
 }
-
 static inline DAQ_RecvStatus wait_for_packet(AFPacket_Context_t *afpc)
 {
     AFPacketInstance *instance;
@@ -1516,9 +1564,6 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
 
     while (idx < max_recv)
     {
-        /* redBorder */
-       // update_soft_bypass_status(afpc);
-
         /* Check to see if the receive has been canceled.  If so, reset it and return appropriately. */
         if (afpc->interrupted)
         {
@@ -1553,51 +1598,6 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
         }
 
         update_soft_bypass_status(afpc);
-
-        /* ---- Bypass batch loop ---- */
-        if (afpc->sw_bypass.pkts_to_bypass > 0) {
-            instance = afpc->curr_instance;
-            unsigned can_do = max_recv - idx;
-            unsigned done = 0;
-
-            afpacket_debug(afpc,
-                "Batch‑bypassing up to %u packets (of %lu pending)\n",
-                can_do, afpc->sw_bypass.pkts_to_bypass);
-
-            while (afpc->sw_bypass.pkts_to_bypass > 0 && done < can_do) {
-                AFPacketEntry *be = find_packet(afpc);
-                if (!be) {
-                    /* no more packets ready right now */
-                    break;
-                }
-
-                int ret = NULL;
-                if (instance->peer) {
-                    ret = afpacket_transmit_packet(
-                        instance->peer,
-                        be->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
-                        be->hdr.h2->tp_snaplen
-                    );
-                }
-
-                /* immediately return descriptor to kernel */
-                be->hdr.h2->tp_status = TP_STATUS_KERNEL;
-
-                if (ret == DAQ_SUCCESS) {
-                    afpc->sw_bypass.pkts_bypassed++;
-                } else {
-                    afpacket_debug(afpc, "Failed to bypass packet: %d\n", ret);
-                }
-
-                afpc->sw_bypass.pkts_to_bypass--;
-                done++;
-            }
-
-            idx += done;
-            status = (done > 0 ? DAQ_RSTAT_OK : DAQ_RSTAT_WOULD_BLOCK);
-            break;
-        }
-        /* ---- End bypass batch ---- */
 
         unsigned int tp_len, tp_mac, tp_snaplen, tp_sec, tp_usec;
         tp_len = entry->hdr.h2->tp_len;

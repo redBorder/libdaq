@@ -1425,16 +1425,22 @@ static int afpacket_daq_get_datalink_type(void *handle)
 {
     return DLT_EN10MB;
 }
-
-static AFPacketEntry *_internal_find_one_ready(AFPacket_Context_t *afpc, AFPacketInstance **inst_ptr)
+static AFPacketEntry *
+_internal_find_one_ready(AFPacket_Context_t *afpc,
+                         AFPacketInstance     **inst_ptr)
 {
     AFPacketInstance *instance = *inst_ptr;
     AFPacketEntry   *entry;
 
+    afpacket_debug(afpc, "enter _internal_find_one_ready, inst %p, pkts_to_bypass=%lu\n",
+                   (void*)instance, afpc->sw_bypass.pkts_to_bypass);
+
     do {
         instance = instance->next ? instance->next : afpc->instances;
         entry = instance->rx_ring.cursor;
+
         if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            afpacket_debug(afpc, "  found USER packet on inst %p\n", (void*)instance);
             *inst_ptr = instance;
             afpc->curr_instance = instance;
             instance->rx_ring.cursor = entry->next;
@@ -1442,22 +1448,35 @@ static AFPacketEntry *_internal_find_one_ready(AFPacket_Context_t *afpc, AFPacke
         }
     } while (instance != *inst_ptr);
 
+    afpacket_debug(afpc, "  no USER packet found in _internal_find_one_ready\n");
     return NULL;
 }
 
-static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
+// Main find_packet with bypass drain
+static inline AFPacketEntry *
+find_packet(AFPacket_Context_t *afpc)
 {
     AFPacketInstance *instance = afpc->curr_instance;
     AFPacketEntry   *entry;
 
+    afpacket_debug(afpc, "enter find_packet, curr_inst=%p, pkts_to_bypass=%lu\n",
+                   (void*)instance, afpc->sw_bypass.pkts_to_bypass);
+
+    // 1) Drain bypass packets
     while (afpc->sw_bypass.pkts_to_bypass > 0) {
+        afpacket_debug(afpc, "  draining bypass, remaining=%lu\n",
+                       afpc->sw_bypass.pkts_to_bypass);
         AFPacketEntry *be = _internal_find_one_ready(afpc, &instance);
         if (!be) {
+            afpacket_debug(afpc, "  no more packets to bypass\n");
             break;
         }
 
         uint8_t *data = be->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen);
         uint32_t len = be->hdr.h2->tp_snaplen;
+        afpacket_debug(afpc, "  bypassing packet len=%u to peer %p\n",
+                       len, (void*)instance->peer);
+
         int ret = NULL;
         if (instance->peer) {
             ret = afpacket_transmit_packet(instance->peer, data, len);
@@ -1465,134 +1484,127 @@ static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
         be->hdr.h2->tp_status = TP_STATUS_KERNEL;
 
         afpc->sw_bypass.pkts_to_bypass--;
-        if (ret == DAQ_SUCCESS)
+        if (ret == DAQ_SUCCESS) {
             afpc->sw_bypass.pkts_bypassed++;
-        else
-            afpacket_debug(afpc, "Bypass failed in find_packet: %d\n", ret);
+            afpacket_debug(afpc, "    bypass success, total_bypassed=%lu\n",
+                           afpc->sw_bypass.pkts_bypassed);
+        } else {
+            afpacket_debug(afpc, "    bypass failed: %d\n", ret);
+        }
     }
 
+    // 2) Normal packet fetch
+    afpacket_debug(afpc, "  searching for next real packet\n");
     instance = afpc->curr_instance;
     do {
         instance = instance->next ? instance->next : afpc->instances;
         entry = instance->rx_ring.cursor;
         if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            afpacket_debug(afpc, "  returning real packet on inst %p\n", (void*)instance);
             afpc->curr_instance = instance;
             instance->rx_ring.cursor = entry->next;
             return entry;
         }
     } while (instance != afpc->curr_instance);
 
+    afpacket_debug(afpc, "  no real packet available\n");
     return NULL;
 }
 
-static inline DAQ_RecvStatus wait_for_packet(AFPacket_Context_t *afpc)
+// wait_for_packet with logs
+static inline DAQ_RecvStatus
+wait_for_packet(AFPacket_Context_t *afpc)
 {
     AFPacketInstance *instance;
     struct pollfd pfd[AF_PACKET_MAX_INTERFACES];
     uint32_t i;
 
-    for (i = 0, instance = afpc->instances; instance; i++, instance = instance->next)
-    {
-        pfd[i].fd = instance->fd;
-        pfd[i].revents = 0;
+    afpacket_debug(afpc, "enter wait_for_packet, timeout=%d\n", afpc->timeout);
+
+    for (i = 0, instance = afpc->instances; instance; i++, instance = instance->next) {
+        pfd[i].fd     = instance->fd;
+        pfd[i].revents= 0;
         pfd[i].events = POLLIN;
+        afpacket_debug(afpc, "  polling fd %d for inst %p\n", instance->fd, (void*)instance);
     }
-    /* Chop the timeout into one second chunks (plus any remainer) to improve responsiveness to
-        interruption when there is no traffic and the timeout is very long (or unlimited). */
+
     int timeout = afpc->timeout;
-    while (timeout != 0)
-    {
-        /* If the receive has been canceled, break out of the loop and return. */
-        if (afpc->interrupted)
-        {
+    while (timeout != 0) {
+        if (afpc->interrupted) {
+            afpacket_debug(afpc, "  interrupted in wait_for_packet\n");
             afpc->interrupted = false;
             return DAQ_RSTAT_INTERRUPTED;
         }
 
-        int poll_timeout;
-        if (timeout >= 1000)
-        {
-            poll_timeout = 1000;
-            timeout -= 1000;
-        }
-        else if (timeout > 0)
-        {
-            poll_timeout = timeout;
-            timeout = 0;
-        }
-        else
-            poll_timeout = 1000;
+        int poll_timeout = timeout >= 1000 ? 1000 : timeout;
+        timeout -= poll_timeout;
+        afpacket_debug(afpc, "  calling poll(timeout=%d)\n", poll_timeout);
 
         int ret = poll(pfd, afpc->intf_count, poll_timeout);
-        /* If some number of of sockets have events returned, check them all for badness. */
-        if (ret > 0)
-        {
-            for (i = 0; i < afpc->intf_count; i++)
-            {
-                if (pfd[i].revents & (POLLHUP | POLLRDHUP | POLLERR | POLLNVAL))
-                {
-                    if (pfd[i].revents & (POLLHUP | POLLRDHUP))
-                        SET_ERROR(afpc->modinst, "%s: Hang-up on a packet socket", __func__);
-                    else if (pfd[i].revents & POLLERR)
-                        SET_ERROR(afpc->modinst, "%s: Encountered error condition on a packet socket", __func__);
-                    else if (pfd[i].revents & POLLNVAL)
-                        SET_ERROR(afpc->modinst, "%s: Invalid polling request on a packet socket", __func__);
-                    return DAQ_RSTAT_ERROR;
+        afpacket_debug(afpc, "  poll returned %d\n", ret);
+
+        if (ret > 0) {
+            for (i = 0; i < afpc->intf_count; i++) {
+                if (pfd[i].revents) {
+                    afpacket_debug(afpc, "   fd %d revents=0x%x\n", pfd[i].fd, pfd[i].revents);
                 }
             }
-            /* All good! A packet should be waiting for us somewhere. */
             return DAQ_RSTAT_OK;
         }
-        /* If we were interrupted by a signal, start the loop over.  The user should call daq_interrupt to actually exit. */
-        if (ret < 0 && errno != EINTR)
-        {
+        if (ret < 0 && errno != EINTR) {
+            afpacket_debug(afpc, "  poll error: %s\n", strerror(errno));
             SET_ERROR(afpc->modinst, "%s: Poll failed: %s (%d)", __func__, strerror(errno), errno);
             return DAQ_RSTAT_ERROR;
         }
     }
 
+    afpacket_debug(afpc, "  wait_for_packet timeout expired\n");
     return DAQ_RSTAT_TIMEOUT;
 }
 
-static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, const DAQ_Msg_t *msgs[], DAQ_RecvStatus *rstat)
+// Main receive loop with entry/exit logs
+static unsigned
+afpacket_daq_msg_receive(void *handle,
+                         const unsigned      max_recv,
+                         const DAQ_Msg_t    *msgs[],
+                         DAQ_RecvStatus     *rstat)
 {
-    AFPacket_Context_t *afpc = (AFPacket_Context_t *) handle;
-    AFPacketInstance *instance;
-    DAQ_RecvStatus status = DAQ_RSTAT_OK;
-    unsigned idx = 0;
+    AFPacket_Context_t *afpc = handle;
+    AFPacketInstance   *instance;
+    DAQ_RecvStatus      status = DAQ_RSTAT_OK;
+    unsigned            idx    = 0;
 
-    while (idx < max_recv)
-    {
-        /* Check to see if the receive has been canceled.  If so, reset it and return appropriately. */
-        if (afpc->interrupted)
-        {
+    afpacket_debug(afpc, "enter daq_msg_receive(max_recv=%u)\n", max_recv);
+
+    while (idx < max_recv) {
+        afpacket_debug(afpc, " loop idx=%u\n", idx);
+
+        if (afpc->interrupted) {
+            afpacket_debug(afpc, " interrupted, exiting\n");
             afpc->interrupted = false;
             status = DAQ_RSTAT_INTERRUPTED;
             break;
         }
 
-        /* Make sure that we have a packet descriptor available to populate. */
         AFPacketPktDesc *desc = afpc->pool.freelist;
-        if (!desc)
-        {
+        if (!desc) {
+            afpacket_debug(afpc, " no free desc, NOBUF\n");
             status = DAQ_RSTAT_NOBUF;
             break;
         }
 
-        /* Try to find a packet ready for processing from one of the RX rings. */
         AFPacketEntry *entry = find_packet(afpc);
-        if (!entry)
-        {
-            /* Only block waiting for a packet if we haven't received anything yet. */
-            /* FIXIT-L - Bad interaction with leading packets filtered by BPF? */
-            if (idx != 0)
-            {
+        if (!entry) {
+            afpacket_debug(afpc, " find_packet returned NULL\n");
+            if (idx != 0) {
                 status = DAQ_RSTAT_WOULD_BLOCK;
                 break;
             }
             status = wait_for_packet(afpc);
-            if (status != DAQ_RSTAT_OK)
+            if (status != DAQ_RSTAT_OK) {
+                afpacket_debug(afpc, " wait_for_packet status %d\n", status);
                 break;
+            }
             continue;
         }
 

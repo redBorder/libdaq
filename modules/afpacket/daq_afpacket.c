@@ -146,6 +146,7 @@ typedef struct _afpacket_context
     DAQ_Stats_t stats;
     /* Message receive state */
     AFPacketInstance *curr_instance;
+    bool use_software_bypass;
 } AFPacket_Context_t;
 
 /* VLAN defintions stolen from LibPCAP's vlan.h. */
@@ -161,6 +162,7 @@ static DAQ_VariableDesc_t afpacket_variable_descriptions[] = {
     { "fanout_type", "Fanout loadbalancing method", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
     { "fanout_flag", "Fanout loadbalancing option", DAQ_VAR_DESC_REQUIRES_ARGUMENT },
     { "use_tx_ring", "Use memory-mapped TX ring", DAQ_VAR_DESC_FORBIDS_ARGUMENT },
+    { "use_software_bypass", "Enable Bypass (Not Analyze by snort)", DAQ_VAR_DESC_REQUIRES_ARGUMENT }
 };
 
 static const int vlan_offset = 2 * ETH_ALEN;
@@ -883,6 +885,9 @@ static int afpacket_daq_instantiate(const DAQ_ModuleConfig_h modcfg, DAQ_ModuleI
                 goto err;
             }
         }
+        else if (!strcpm(varKey, "use_software_bypass")){
+            afpc->use_software_bypass = true;
+        }
         else if (!strcmp(varKey, "use_tx_ring"))
             afpc->use_tx_ring = true;
 
@@ -1385,6 +1390,16 @@ static unsigned afpacket_daq_msg_receive(void *handle, const unsigned max_recv, 
             status = wait_for_packet(afpc);
             if (status != DAQ_RSTAT_OK)
                 break;
+            continue;
+        }
+
+        if(afpc->use_software_bypass){
+            if (instance->peer) {
+                afpacket_transmit_packet(instance->peer, 
+                                       entry->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen),
+                                       entry->hdr.h2->tp_snaplen);
+                entry->hdr.h2->tp_status = TP_STATUS_KERNEL;
+            }
             continue;
         }
 

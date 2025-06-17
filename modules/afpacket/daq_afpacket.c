@@ -1414,8 +1414,8 @@ static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats)
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
     stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
-    AFPACKET_LOG(afpc, "[STATS] Reporting: analyzed=%lu, received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
-                  afpc->stats.packets_analyzed, afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
+    AFPACKET_LOG(afpc, "[STATS] Reporting: received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
+                  afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
                   afpc->stats.packets_filtered, afpc->stats.bypass_activations);
     afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
     return DAQ_SUCCESS;

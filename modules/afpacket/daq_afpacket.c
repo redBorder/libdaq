@@ -25,6 +25,7 @@
 
 #define _GNU_SOURCE // For POLLRDHUP
 
+#include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
 #include <linux/if_ether.h>

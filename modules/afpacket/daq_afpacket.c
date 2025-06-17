@@ -309,9 +309,10 @@ static void software_bypass_stats_print_line(AFPacket_Context_t *context) {
 }
 
 static void update_soft_bypass_status(AFPacket_Context_t *context) {
-    AFPACKET_LOG(context, "[BYPASS_STATUS] Entering update_soft_bypass_status. pkts_to_bypass=%lu, sampling_rate=%lu, current_received=%lu, pkts_bypassed=%lu\n",
+    AFPACKET_LOG(context, "[BYPASS_STATUS] Entering update_soft_bypass_status. pkts_to_bypass=%lu, sampling_rate=%lu, current_received=%lu, pkts_bypassed=%lu, bypass_activations=%lu\n",
                   context->sw_bypass.pkts_to_bypass, context->sw_bypass.sampling_rate,
-                  context->stats.packets_received, context->sw_bypass.pkts_bypassed);
+                  context->stats.packets_received, context->sw_bypass.pkts_bypassed,
+                  context->stats.bypass_activations);
 
     if (context->sw_bypass.sampling_rate == 0) {
         afpacket_debug(context, "Bypass sampling rate is 0 - bypass disabled\n");
@@ -338,6 +339,9 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
                           context->sw_bypass.pkts_to_bypass);
             AFPACKET_LOG(context, "[BYPASS_STATUS] Queue above upper threshold. Activating bypass for %lu packets.\n",
                           context->sw_bypass.pkts_to_bypass);
+            context->stats.bypass_activations++;
+            AFPACKET_LOG(context, "[BYPASS_STATUS] Bypass activated. Total activations: %lu\n",
+                          context->stats.bypass_activations);
         } else {
             AFPACKET_LOG(context, "[BYPASS_STATUS] Queue below upper threshold. Bypass remains inactive.\n");
         }
@@ -366,8 +370,8 @@ static void update_soft_bypass_status(AFPacket_Context_t *context) {
         AFPACKET_LOG(context, "[BYPASS_STATUS] Bypass active. pkts_to_bypass=%lu (no decision this cycle)\n",
                       context->sw_bypass.pkts_to_bypass);
     }
-    AFPACKET_LOG(context, "[BYPASS_STATUS] Exiting update_soft_bypass_status. Final pkts_to_bypass=%lu\n",
-                  context->sw_bypass.pkts_to_bypass);
+    AFPACKET_LOG(context, "[BYPASS_STATUS] Exiting update_soft_bypass_status. Final pkts_to_bypass=%lu, bypass_activations=%lu\n",
+                  context->sw_bypass.pkts_to_bypass, context->stats.bypass_activations);
 }
 
 static int bind_instance_interface(AFPacket_Context_t *afpc, AFPacketInstance *instance, int protocol)
@@ -898,6 +902,8 @@ static void reset_stats(AFPacket_Context_t *afpc)
     socklen_t len = sizeof (struct tpacket_stats);
 
     memset(&afpc->stats, 0, sizeof(DAQ_Stats_t));
+    /* Initialize the new counter */
+    afpc->stats.bypass_activations = 0;
     /* Just call PACKET_STATISTICS to clear each instance's stats. */
     for (instance = afpc->instances; instance; instance = instance->next)
         getsockopt(instance->fd, SOL_PACKET, PACKET_STATISTICS, &kstats, &len);
@@ -1405,13 +1411,13 @@ static int afpacket_daq_ioctl(void *handle, DAQ_IoctlCmd cmd, void *arg, size_t 
 static int afpacket_daq_get_stats(void *handle, DAQ_Stats_t *stats)
 {
     AFPacket_Context_t *afpc = (AFPacket_Context_t *) handle;
-
     update_hw_stats(afpc);
     memcpy(stats, &afpc->stats, sizeof(DAQ_Stats_t));
-
     stats->hw_packets_bypassed = afpc->sw_bypass.pkts_bypassed - afpc->sw_bypass.base_pkts_bypassed;
+    AFPACKET_LOG(afpc, "[STATS] Reporting: analyzed=%lu, received=%lu, bypassed=%lu, filtered=%lu, bypass_activations=%lu\n",
+                  afpc->stats.packets_analyzed, afpc->stats.packets_received, afpc->sw_bypass.pkts_bypassed,
+                  afpc->stats.packets_filtered, afpc->stats.bypass_activations);
     afpc->sw_bypass.base_pkts_bypassed = afpc->sw_bypass.pkts_bypassed;
-
     return DAQ_SUCCESS;
 }
 

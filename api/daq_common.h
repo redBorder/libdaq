@@ -351,6 +351,7 @@ typedef struct _daq_stats
     uint64_t hw_packets_bypassed;       /* Packets bypassed by the hardware */
     uint64_t packets_received;          /* Packets received by this instance */
     uint64_t packets_filtered;          /* Packets filtered by this instance's BPF */
+    uint64_t bypass_activations;        /* Number of times sw bypass was activated */
     uint64_t packets_injected;          /* Packets injected by this instance */
     uint64_t packets_outstanding;       /* Packets outstanding in this instance */
     uint64_t verdicts[MAX_DAQ_VERDICT]; /* Counters of packets handled per-verdict. */

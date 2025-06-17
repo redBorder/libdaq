@@ -1426,21 +1426,36 @@ static int afpacket_daq_get_datalink_type(void *handle)
     return DLT_EN10MB;
 }
 
+static AFPacketEntry *_internal_find_one_ready(AFPacket_Context_t *afpc, AFPacketInstance **inst_ptr)
+{
+    AFPacketInstance *instance = *inst_ptr;
+    AFPacketEntry   *entry;
+
+    do {
+        instance = instance->next ? instance->next : afpc->instances;
+        entry = instance->rx_ring.cursor;
+        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
+            *inst_ptr = instance;
+            afpc->curr_instance = instance;
+            instance->rx_ring.cursor = entry->next;
+            return entry;
+        }
+    } while (instance != *inst_ptr);
+
+    return NULL;
+}
+
 static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
 {
     AFPacketInstance *instance = afpc->curr_instance;
     AFPacketEntry   *entry;
 
-    /* 1) Drain all bypass packets in one spin */
     while (afpc->sw_bypass.pkts_to_bypass > 0) {
-        /* Try to grab the next ready packet */
         AFPacketEntry *be = _internal_find_one_ready(afpc, &instance);
         if (!be) {
-            /* no more packets right now — let caller block or retry */
             break;
         }
 
-        /* Forward it immediately */
         uint8_t *data = be->hdr.raw + TPACKET_ALIGN(instance->tp_hdrlen);
         uint32_t len = be->hdr.h2->tp_snaplen;
         int ret = NULL;
@@ -1466,25 +1481,6 @@ static inline AFPacketEntry *find_packet(AFPacket_Context_t *afpc)
             return entry;
         }
     } while (instance != afpc->curr_instance);
-
-    return NULL;
-}
-
-static AFPacketEntry *_internal_find_one_ready(AFPacket_Context_t *afpc, AFPacketInstance **inst_ptr)
-{
-    AFPacketInstance *instance = *inst_ptr;
-    AFPacketEntry   *entry;
-
-    do {
-        instance = instance->next ? instance->next : afpc->instances;
-        entry = instance->rx_ring.cursor;
-        if (entry->hdr.h2->tp_status & TP_STATUS_USER) {
-            *inst_ptr = instance;
-            afpc->curr_instance = instance;
-            instance->rx_ring.cursor = entry->next;
-            return entry;
-        }
-    } while (instance != *inst_ptr);
 
     return NULL;
 }
